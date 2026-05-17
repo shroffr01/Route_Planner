@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: ./apps/api
+    ports: ["8000:8000"]
+    environment:
+      ROUTEPLANNER_REDIS_URL: "redis://redis:6379/0"
+      ROUTEPLANNER_MAPBOX_TOKEN: "${MAPBOX_TOKEN}"
+      ROUTEPLANNER_OPENWEATHER_API_KEY: "${OPENWEATHER_API_KEY}"
+      ROUTEPLANNER_CORS_ORIGINS: '["http://localhost:3000"]'
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    build: ./apps/web
+    ports: ["3000:3000"]
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: "http://localhost:8000"
+      NEXT_PUBLIC_MAPBOX_TOKEN: "${MAPBOX_TOKEN}"
+    depends_on:
+      - api

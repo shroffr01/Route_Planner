@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(update-config)",
+      "Bash(curl -s -o /tmp/iem_caps.xml -w \"HTTP %{http_code}\\\\n\" \"https://mesonet.agron.iastate.edu/cgi-bin/wms/us/hrrr_refd.cgi?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetCapabilities\")",
+      "Read(//tmp/**)",
+      "WebFetch(domain:mesonet.agron.iastate.edu)",
+      "PowerShell($r = Invoke-WebRequest -Uri \"https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/hrrr::REFD-F0000-0/4/4/6.png\" -Method Head -UseBasicParsing; $r.Headers | Format-List)"
+    ]
+  }
+}

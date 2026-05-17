@@ -1,0 +1,28 @@
+# pixi
+.pixi/*
+!.pixi/config.toml
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# node
+node_modules/
+.next/
+out/
+
+# env / secrets
+.env
+.env.local
+*.local
+
+# editor
+.vscode/
+.idea/
+
+# build artifacts
+dist/
+build/
