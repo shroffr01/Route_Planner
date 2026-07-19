@@ -1,6 +1,8 @@
 "use client";
 import { Clock } from "lucide-react";
 
+const MAX_ADVANCE_DAYS = 7;
+
 function toLocalInputValue(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -13,6 +15,20 @@ export function DepartureTimePicker({
   value: Date;
   onChange: (d: Date) => void;
 }) {
+  const minDate = new Date();
+  const maxDate = new Date(Date.now() + MAX_ADVANCE_DAYS * 24 * 60 * 60 * 1000);
+
+  function handleChange(next: Date) {
+    if (Number.isNaN(next.getTime())) return;
+    if (next < minDate) {
+      onChange(minDate);
+    } else if (next > maxDate) {
+      onChange(maxDate);
+    } else {
+      onChange(next);
+    }
+  }
+
   return (
     <div>
       <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
@@ -27,7 +43,9 @@ export function DepartureTimePicker({
           <input
             type="datetime-local"
             value={toLocalInputValue(value)}
-            onChange={(e) => onChange(new Date(e.target.value))}
+            min={toLocalInputValue(minDate)}
+            max={toLocalInputValue(maxDate)}
+            onChange={(e) => handleChange(new Date(e.target.value))}
             className="w-full rounded-xl border border-zinc-200 bg-white py-3 pl-9 pr-3 text-sm shadow-sm outline-none transition-all hover:border-zinc-300 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700 dark:focus:border-sky-500 dark:focus:ring-sky-950"
           />
         </div>

@@ -2,34 +2,50 @@
 import "mapbox-gl/dist/mapbox-gl.css";
 
 import mapboxgl from "mapbox-gl";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "@/components/theme/ThemeProvider";
-import { formatHour } from "@/lib/format";
-import { formatForecastHour, HRRR_MAX_FORECAST_MIN, pickHrrrFrame } from "@/lib/hrrr";
+import { pickHrrrFrame } from "@/lib/hrrr";
+import {
+  escapeHtml,
+  renderAlertPolygonPopup,
+  renderAlertsPanelHTML,
+  SEVERITY_FILL,
+  SEVERITY_LINE,
+  weatherIconSvg,
+  worstSeverity,
+} from "@/components/map/popupContent";
 import { departTimeMs, positionAtTime } from "@/lib/route";
-import type { Alert, TripResponse } from "@/lib/schemas";
+import type { TripResponse } from "@/lib/schemas";
 import { useUiStore } from "@/store/ui";
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
-// NWS severity → polygon fill color. Lower-severity alerts stay visible but
-// don't shout as loudly as Extreme/Severe ones.
-const SEVERITY_FILL: Record<string, string> = {
-  Extreme: "#dc2626", // red-600
-  Severe: "#ef4444", // red-500
-  Moderate: "#f97316", // orange-500
-  Minor: "#eab308", // yellow-500
-  Unknown: "#a1a1aa", // zinc-400
-};
-const SEVERITY_LINE: Record<string, string> = {
-  Extreme: "#991b1b",
-  Severe: "#b91c1c",
-  Moderate: "#c2410c",
-  Minor: "#a16207",
-  Unknown: "#52525b",
-};
+// Minimum on-screen distance (px) between marker anchors before we hide the
+// later one — keeps pill labels legible instead of overlapping at low zoom.
+// Markers reappear once the camera is close enough to space them out.
+const MIN_MARKER_SPACING_PX = 56;
+
+function updateMarkerVisibility(
+  map: mapboxgl.Map,
+  markers: mapboxgl.Marker[],
+  elements: HTMLDivElement[],
+): void {
+  let lastShown: mapboxgl.Point | null = null;
+  markers.forEach((marker, i) => {
+    const el = elements[i];
+    if (!el) return;
+    const point = map.project(marker.getLngLat());
+    const show = i === 0 || !lastShown || pointDistance(point, lastShown) >= MIN_MARKER_SPACING_PX;
+    el.classList.toggle("rp-marker-hidden", !show);
+    if (show) lastShown = point;
+  });
+}
+
+function pointDistance(a: mapboxgl.Point, b: mapboxgl.Point): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
 
 const ALERT_LAYER_IDS = ["route-alerts-fill", "route-alerts-line"];
 // Double-buffered radar: two slots, swap between them so the previous frame
@@ -62,6 +78,8 @@ export function Map({ trip }: { trip: TripResponse | null }) {
   const { theme } = useTheme();
   const setHovered = useUiStore((s) => s.setHoveredWaypoint);
   const hoveredFromOutside = useUiStore((s) => s.hoveredWaypoint);
+  const setSelectedWaypoint = useUiStore((s) => s.setSelectedWaypoint);
+  const selectedFromOutside = useUiStore((s) => s.selectedWaypoint);
   const showAlerts = useUiStore((s) => s.showAlerts);
   const setShowAlerts = useUiStore((s) => s.setShowAlerts);
   const radarEnabled = useUiStore((s) => s.radarEnabled);
@@ -75,11 +93,26 @@ export function Map({ trip }: { trip: TripResponse | null }) {
     pendingHandler: null,
   });
 
-  const [radarStatus, setRadarStatus] = useState<string>("");
   // Bumped every time the Mapbox style finishes loading. setStyle() (theme
   // switch) wipes all sources/layers we added to the previous style, so we use
   // this counter to retrigger the trip + radar effects and re-create them.
   const [styleVersion, setStyleVersion] = useState(0);
+
+  // Recompute only when the selected waypoint or trip changes — NOT on every
+  // render (e.g. marker hover). This lets the callback ref below avoid
+  // resetting innerHTML (and losing .is-open state) on unrelated re-renders.
+  const alertHtml = useMemo(() => {
+    const wp =
+      trip && selectedFromOutside != null ? trip.waypoints[selectedFromOutside] : null;
+    const alerts = wp ? wp.active_alerts.map((j) => trip!.alerts[j]).filter(Boolean) : [];
+    return alerts.length > 0 ? renderAlertsPanelHTML(alerts) : "";
+  }, [trip, selectedFromOutside]);
+
+  // Only fires when alertHtml changes, so hover re-renders never overwrite the DOM.
+  const setAlertPanelEl = useCallback(
+    (el: HTMLDivElement | null) => { if (el) el.innerHTML = alertHtml; },
+    [alertHtml],
+  );
 
   const styleUrl = useMemo(
     () =>
@@ -89,22 +122,53 @@ export function Map({ trip }: { trip: TripResponse | null }) {
     [theme],
   );
 
+  // Mapbox GL aborts its in-flight tile/style requests when the map is torn
+  // down (e.g. React Strict Mode's mount→cleanup→remount cycle in dev). That
+  // produces a benign "AbortError: signal is aborted without reason" that
+  // Next's dev overlay surfaces as a Runtime Error — swallow just that.
+  useEffect(() => {
+    const isBenignAbort = (v: unknown) => v instanceof Error && v.name === "AbortError";
+    const onRejection = (e: PromiseRejectionEvent) => {
+      if (isBenignAbort(e.reason)) e.preventDefault();
+    };
+    const onError = (e: ErrorEvent) => {
+      if (isBenignAbort(e.error)) e.preventDefault();
+    };
+    window.addEventListener("unhandledrejection", onRejection);
+    window.addEventListener("error", onError);
+    return () => {
+      window.removeEventListener("unhandledrejection", onRejection);
+      window.removeEventListener("error", onError);
+    };
+  }, []);
+
   // Init map once.
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     mapboxgl.accessToken = MAPBOX_TOKEN;
-    mapRef.current = new mapboxgl.Map({
+    const map = new mapboxgl.Map({
       container: containerRef.current,
       style: styleUrl,
       center: [-95, 39],
       zoom: 3.5,
       attributionControl: false,
     });
-    mapRef.current.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
+    mapRef.current = map;
+    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
     // setStyle wipes layers — bump styleVersion so the render effects re-run.
-    mapRef.current.on("style.load", () => setStyleVersion((v) => v + 1));
+    map.on("style.load", () => setStyleVersion((v) => v + 1));
+    // Re-declutter markers as the camera moves — zooming in spreads waypoints
+    // out on screen, so previously-hidden ones become legible again.
+    map.on("move", () => {
+      if (mapRef.current) updateMarkerVisibility(mapRef.current, markersRef.current, markerElementsRef.current);
+    });
+    // Keep canvas pixel-perfect when the container changes size (flex/grid
+    // layout settling, window resize, bottom-sheet expansion on mobile).
+    const ro = new ResizeObserver(() => map.resize());
+    ro.observe(containerRef.current);
     return () => {
-      mapRef.current?.remove();
+      ro.disconnect();
+      map.remove();
       mapRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,6 +200,14 @@ export function Map({ trip }: { trip: TripResponse | null }) {
       el.classList.toggle("is-active", active);
     });
   }, [hoveredFromOutside]);
+
+  // Highlight the marker whose info panel is shown in the left column.
+  useEffect(() => {
+    markerElementsRef.current.forEach((el, i) => {
+      if (!el) return;
+      el.classList.toggle("is-selected", selectedFromOutside === i);
+    });
+  }, [selectedFromOutside, trip]);
 
   // Render route + markers + alerts whenever trip changes.
   useEffect(() => {
@@ -238,6 +310,10 @@ export function Map({ trip }: { trip: TripResponse | null }) {
         }));
 
       if (alertFeatures.length > 0) {
+        // Read the live toggle value rather than depending on `showAlerts` —
+        // the dedicated visibility effect below keeps it in sync without
+        // forcing this whole (expensive) rebuild to re-run on every toggle.
+        const alertsVisible = useUiStore.getState().showAlerts;
         map.addSource(alertSourceId, {
           type: "geojson",
           data: { type: "FeatureCollection", features: alertFeatures },
@@ -250,7 +326,7 @@ export function Map({ trip }: { trip: TripResponse | null }) {
             "fill-color": ["get", "fill"],
             "fill-opacity": 0.18,
           },
-          layout: { visibility: showAlerts ? "visible" : "none" },
+          layout: { visibility: alertsVisible ? "visible" : "none" },
         });
         map.addLayer({
           id: alertLineId,
@@ -261,7 +337,7 @@ export function Map({ trip }: { trip: TripResponse | null }) {
             "line-width": 1.8,
             "line-dasharray": [4, 2],
           },
-          layout: { visibility: showAlerts ? "visible" : "none" },
+          layout: { visibility: alertsVisible ? "visible" : "none" },
         });
 
         map.on("mouseenter", alertFillId, () => {
@@ -291,7 +367,11 @@ export function Map({ trip }: { trip: TripResponse | null }) {
         el.innerHTML = `
           <div class="rp-marker-pill${hasAlert ? " has-alert" : ""}">
             <span class="rp-marker-grade grade-${w.grade.letter.toLowerCase()}">${w.grade.letter}</span>
-            <span class="rp-marker-temp">${w.forecast ? Math.round(w.forecast.temp_f) + "°" : "—"}</span>
+            <span class="rp-marker-icon" title="${
+              w.forecast
+                ? escapeHtml(w.forecast.summary) + " · " + Math.round(w.forecast.temp_f) + "°F"
+                : "Forecast unavailable"
+            }">${weatherIconSvg(w.forecast?.condition_code)}</span>
             ${
               hasAlert
                 ? `<span class="rp-marker-alert" style="background:${badgeColor}" title="${escapeHtml(
@@ -304,34 +384,21 @@ export function Map({ trip }: { trip: TripResponse | null }) {
         `;
         el.addEventListener("mouseenter", () => setHovered(w.index));
         el.addEventListener("mouseleave", () => setHovered(null));
-
-        const popup = new mapboxgl.Popup({
-          offset: 24,
-          maxWidth: "380px",
-          closeButton: true,
-        }).setHTML(renderPopupHTML(trip, w.index));
-
-        // Make alert cards in the popover click-to-expand. Mapbox replaces the
-        // popup content node on each open, so wire delegation per open event.
-        popup.on("open", () => {
-          const root = popup.getElement();
-          if (!root) return;
-          root.querySelectorAll<HTMLElement>(".rp-alert-block").forEach((block) => {
-            const head = block.querySelector<HTMLElement>(".rp-alert-clickable");
-            if (!head) return;
-            head.addEventListener("click", () => {
-              block.classList.toggle("is-open");
-            });
-          });
-        });
+        el.addEventListener("click", () => setSelectedWaypoint(w.index));
+        if (useUiStore.getState().selectedWaypoint === w.index) {
+          el.classList.add("is-selected");
+        }
 
         const marker = new mapboxgl.Marker({ element: el, anchor: "bottom" })
           .setLngLat([w.lon, w.lat])
-          .setPopup(popup)
           .addTo(map);
         markersRef.current.push(marker);
         markerElementsRef.current.push(el);
       });
+
+      // Hide overlapping markers immediately on first paint — the "move"
+      // listener takes over for subsequent zoom/pan changes.
+      updateMarkerVisibility(map, markersRef.current, markerElementsRef.current);
 
       // Keep any existing radar layers below the route line, regardless of
       // which effect added what first. moveLayer with a beforeId moves the
@@ -358,9 +425,20 @@ export function Map({ trip }: { trip: TripResponse | null }) {
       );
     };
 
-    if (map.isStyleLoaded()) apply();
-    else map.once("style.load", apply);
-  }, [trip, setHovered, showAlerts, styleVersion]);
+    if (map.isStyleLoaded()) {
+      apply();
+    } else {
+      // `styleVersion` is bumped by the `style.load` event, so if we reach
+      // here the event already fired but `isStyleLoaded()` is transiently
+      // false. Waiting for `idle` (which fires after tiles finish loading) is
+      // more reliable than re-listening for `style.load`, which won't fire again.
+      map.once("idle", apply);
+    }
+    // showAlerts intentionally omitted — toggling it is handled live by the
+    // effect below without rebuilding markers/layers/route from scratch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { map.off("idle", apply); };
+  }, [trip, setHovered, styleVersion]);
 
   // Toggle alert layer visibility live (without rebuilding markers).
   useEffect(() => {
@@ -389,18 +467,8 @@ export function Map({ trip }: { trip: TripResponse | null }) {
         // next trip-render apply re-adds the line layers above us anyway.
         const beforeId = map.getLayer("route-line-bg") ? "route-line-bg" : undefined;
         swapRadarFrame(map, pick.tileUrl, beforeId, radarStateRef);
-        const fh = formatForecastHour(pick.forecastMin);
-        if (pick.clamped === "after") {
-          const maxH = HRRR_MAX_FORECAST_MIN / 60;
-          setRadarStatus(`Beyond HRRR's +${maxH}h horizon — showing the last frame.`);
-        } else if (pick.clamped === "before") {
-          setRadarStatus(`Before the latest run — showing analysis (F00).`);
-        } else {
-          setRadarStatus(`HRRR composite reflectivity · forecast ${fh} from latest run`);
-        }
       } else {
         teardownRadar(map, radarStateRef);
-        setRadarStatus("");
       }
 
       // ---- Ghost driver marker ----
@@ -612,11 +680,11 @@ export function Map({ trip }: { trip: TripResponse | null }) {
   }, [activeOverlay, styleVersion]);
 
   return (
-    <div className="relative h-full w-full">
-      <div ref={containerRef} className="h-full w-full" />
+    <div className="relative min-h-0 flex-1 w-full">
+      <div ref={containerRef} className="absolute inset-0" />
 
-      {/* Floating overlay: alerts toggle + radar status. */}
-      <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-col gap-2">
+      {/* Floating overlay: alerts toggle + selected-waypoint alert card. */}
+      <div className="pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-2">
         <button
           type="button"
           onClick={() => setShowAlerts(!showAlerts)}
@@ -638,10 +706,15 @@ export function Map({ trip }: { trip: TripResponse | null }) {
             </span>
           )}
         </button>
-        {radarStatus && (
-          <div className="pointer-events-auto inline-flex max-w-[280px] items-center gap-2 rounded-md border border-zinc-300/60 bg-white/85 px-2.5 py-1 text-[11px] text-zinc-600 shadow-sm backdrop-blur dark:border-zinc-700/60 dark:bg-zinc-900/80 dark:text-zinc-300">
-            {radarStatus}
-          </div>
+        {alertHtml && (
+          <div
+            ref={setAlertPanelEl}
+            className="pointer-events-auto max-w-[300px] overflow-hidden rounded-xl border border-zinc-200/80 bg-white/90 shadow-md backdrop-blur dark:border-zinc-700/80 dark:bg-zinc-900/90"
+            onClick={(e) => {
+              const head = (e.target as HTMLElement).closest(".rp-alert-clickable");
+              if (head) head.closest(".rp-alert-block")?.classList.toggle("is-open");
+            }}
+          />
         )}
       </div>
 
@@ -654,6 +727,26 @@ export function Map({ trip }: { trip: TripResponse | null }) {
         .rp-marker:hover, .rp-marker.is-active {
           transform: translateY(-8px) scale(1.06);
           z-index: 10;
+        }
+        .rp-marker.is-selected {
+          transform: translateY(-8px) scale(1.06);
+          z-index: 11;
+        }
+        .rp-marker.is-selected .rp-marker-pill {
+          box-shadow:
+            0 0 0 2px rgb(var(--accent-from)),
+            0 6px 14px -4px rgba(15, 23, 42, 0.18),
+            0 2px 4px rgba(15, 23, 42, 0.06);
+        }
+        .rp-marker-hidden {
+          display: none;
+        }
+        .rp-marker-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 20px;
+          height: 20px;
         }
         .rp-marker-pill {
           position: relative;
@@ -745,7 +838,10 @@ export function Map({ trip }: { trip: TripResponse | null }) {
         .rp-popup .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
         .rp-popup .place { font-size: 14px; font-weight: 600; line-height: 1.3; max-width: 230px; }
         .rp-popup .time { font-size: 11px; color: rgb(var(--muted)); margin-top: 2px; }
-        .rp-popup .temp { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; margin-top: 8px; }
+        .rp-popup .temp-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+        .rp-popup .temp { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+        .rp-popup .rp-popup-icon { display: inline-flex; align-items: center; justify-content: center; }
+        .rp-popup .rp-popup-icon svg { width: 26px; height: 26px; }
         .rp-popup .summary { font-size: 12px; color: rgb(var(--muted)); margin-top: -2px; }
         .rp-popup .grid {
           display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px;
@@ -839,119 +935,22 @@ export function Map({ trip }: { trip: TripResponse | null }) {
           font-weight: 800; font-size: 18px; color: white;
           box-shadow: 0 4px 10px -2px rgba(0,0,0,0.15);
         }
+
+        /* Sidebar embedding: the popup content is reused inside .card panels,
+           which should size to their content rather than scroll like the
+           compact map popover. */
+        .card .rp-popup {
+          padding: 18px 20px;
+          max-height: none;
+          overflow-y: visible;
+        }
+        .card .rp-alert-desc {
+          max-height: none;
+          overflow-y: visible;
+        }
       `}</style>
     </div>
   );
-}
-
-function worstSeverity(alerts: Alert[]): string | null {
-  const order = ["Extreme", "Severe", "Moderate", "Minor", "Unknown"];
-  let best: number = order.length;
-  for (const a of alerts) {
-    const i = order.indexOf(a.severity);
-    if (i !== -1 && i < best) best = i;
-  }
-  return best === order.length ? null : order[best];
-}
-
-function renderPopupHTML(trip: TripResponse, index: number): string {
-  const w = trip.waypoints[index];
-  if (!w) return "";
-  const fc = w.forecast;
-  const alerts = w.active_alerts.map((j) => trip.alerts[j]).filter(Boolean);
-  const reasons =
-    w.grade.reasons.length > 0
-      ? `<div class="reasons">${w.grade.reasons.map((r) => "• " + escapeHtml(r)).join("<br/>")}</div>`
-      : "";
-
-  const stats = fc
-    ? `
-      <div class="grid">
-        <div class="k">Feels like</div><div class="v">${Math.round(fc.feels_like_f)}°F</div>
-        <div class="k">Precipitation</div><div class="v">${Math.round(fc.pop_pct)}%</div>
-        <div class="k">Wind</div><div class="v">${Math.round(fc.wind_mph)} mph${fc.wind_gust_mph ? " (gust " + Math.round(fc.wind_gust_mph) + ")" : ""}</div>
-        <div class="k">Cloud cover</div><div class="v">${Math.round(fc.cloud_pct)}%</div>
-        ${fc.visibility_mi != null ? `<div class="k">Visibility</div><div class="v">${fc.visibility_mi.toFixed(1)} mi</div>` : ""}
-        ${fc.uv != null ? `<div class="k">UV index</div><div class="v">${fc.uv}</div>` : ""}
-      </div>`
-    : `<div class="summary" style="margin-top:10px;">Forecast unavailable for this point.</div>`;
-
-  const alertsHtml =
-    alerts.length > 0
-      ? `<div class="rp-alert-banner">⚠ ${alerts.length} active weather alert${alerts.length === 1 ? "" : "s"}</div>` +
-        `<div class="rp-alert-hint">Click any alert below for full details.</div>` +
-        alerts.map(renderAlertBlock).join("")
-      : "";
-
-  return `
-    <div class="rp-popup">
-      <div class="head">
-        <div>
-          <div class="place">${escapeHtml(w.place_label)}</div>
-          <div class="time">Arriving ${escapeHtml(formatHour(w.arrival))}</div>
-        </div>
-        <span class="grade-big grade-${w.grade.letter.toLowerCase()}">${w.grade.letter}</span>
-      </div>
-      ${fc ? `<div class="temp">${Math.round(fc.temp_f)}°F</div><div class="summary">${escapeHtml(fc.summary)}</div>` : ""}
-      ${stats}
-      ${reasons}
-      ${alertsHtml}
-    </div>
-  `;
-}
-
-function renderAlertBlock(alert: Alert): string {
-  const sev = alert.severity || "Unknown";
-  const sevClass = `sev-${sev.toLowerCase()}`;
-  const timeWindow = formatAlertWindow(alert.starts_at, alert.ends_at);
-  const headline = alert.headline ? escapeHtml(alert.headline) : "";
-  const desc = alert.description ? escapeHtml(alert.description) : "";
-  // Header is the click target; body is hidden until .is-open is toggled by
-  // the click handler attached on popup open (see Map.tsx).
-  return `
-    <div class="rp-alert-block">
-      <div class="rp-alert-clickable" role="button" tabindex="0">
-        <div class="rp-alert-head">
-          <span>${escapeHtml(alert.event)}<span class="rp-alert-chev">▶</span></span>
-          <span class="rp-alert-sev ${sevClass}">${escapeHtml(sev)}</span>
-        </div>
-        ${timeWindow ? `<div class="rp-alert-time">${timeWindow}</div>` : ""}
-      </div>
-      <div class="rp-alert-body">
-        ${headline ? `<div class="rp-alert-headline">${headline}</div>` : ""}
-        ${desc ? `<div class="rp-alert-desc">${desc}</div>` : ""}
-      </div>
-    </div>
-  `;
-}
-
-function renderAlertPolygonPopup(props: Record<string, string>): string {
-  const sev = props.severity || "Unknown";
-  const sevClass = `sev-${sev.toLowerCase()}`;
-  return `
-    <div class="rp-popup" style="padding:14px 16px;">
-      <div class="rp-alert-head" style="font-size:14px;">
-        <span>${escapeHtml(props.event ?? "Weather alert")}</span>
-        <span class="rp-alert-sev ${sevClass}">${escapeHtml(sev)}</span>
-      </div>
-      ${props.headline ? `<div class="rp-alert-headline">${escapeHtml(props.headline)}</div>` : ""}
-    </div>
-  `;
-}
-
-function formatAlertWindow(startsAt: string, endsAt: string): string {
-  if (!startsAt && !endsAt) return "";
-  const fmt = (s: string) => {
-    if (!s) return "?";
-    const d = new Date(s);
-    if (isNaN(d.getTime())) return "?";
-    return d.toLocaleString(undefined, {
-      weekday: "short",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  };
-  return `In effect ${fmt(startsAt)} → ${fmt(endsAt)}`;
 }
 
 // Swap to a new HRRR frame.
@@ -1099,12 +1098,4 @@ function teardownRadar(
     pendingUrl: null,
     pendingHandler: null,
   };
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }

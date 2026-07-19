@@ -1,6 +1,7 @@
 """FastAPI dependency providers (httpx client, cache, settings)."""
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -10,6 +11,18 @@ from fastapi import Depends, FastAPI
 
 from app.cache import Cache
 from app.config import Settings, get_settings
+from app.logging import log
+
+
+async def _overlay_prewarm_loop(app: FastAPI, settings: Settings) -> None:
+    from app.routers.overlay import OVERLAY_REFRESH_INTERVAL_S, refresh_overlay_caches
+
+    while True:
+        try:
+            await refresh_overlay_caches(app.state.http, app.state.cache, settings)
+        except Exception as e:
+            log.warning("overlay_prewarm_loop_failed", error=str(e))
+        await asyncio.sleep(OVERLAY_REFRESH_INTERVAL_S)
 
 
 @asynccontextmanager
@@ -20,9 +33,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         headers={"User-Agent": settings.user_agent},
     )
     app.state.cache = Cache(settings.redis_url)
+    prewarm_task = asyncio.create_task(_overlay_prewarm_loop(app, settings))
     try:
         yield
     finally:
+        prewarm_task.cancel()
         await app.state.http.aclose()
 
 

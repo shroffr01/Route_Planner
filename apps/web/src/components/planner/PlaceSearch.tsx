@@ -20,21 +20,24 @@ export function PlaceSearch({
   const [results, setResults] = useState<Place[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setQ(value?.label ?? "");
   }, [value]);
 
-  // 100ms debounce + AbortController so stale requests get cancelled.
+  // 100ms debounce. Stale responses are dropped via a request-id counter
+  // rather than AbortController — aborting an in-flight fetch raises an
+  // "AbortError: signal is aborted without reason" that surfaces in Next's
+  // dev error overlay even when caught, so we just ignore late results.
   function onInputChange(text: string) {
     setQ(text);
     setOpen(true);
     if (value) onChange(null);
 
     if (timerRef.current) clearTimeout(timerRef.current);
-    abortRef.current?.abort();
+    const requestId = ++requestIdRef.current;
 
     if (!text.trim()) {
       setResults([]);
@@ -44,17 +47,15 @@ export function PlaceSearch({
 
     setLoading(true);
     timerRef.current = setTimeout(() => {
-      const ac = new AbortController();
-      abortRef.current = ac;
-      searchPlacesDirect(text, { signal: ac.signal })
+      searchPlacesDirect(text)
         .then((r) => {
-          if (!ac.signal.aborted) {
+          if (requestIdRef.current === requestId) {
             setResults(r);
             setLoading(false);
           }
         })
         .catch(() => {
-          if (!ac.signal.aborted) {
+          if (requestIdRef.current === requestId) {
             setResults([]);
             setLoading(false);
           }
@@ -91,7 +92,7 @@ export function PlaceSearch({
       </div>
 
       {open && q.trim().length > 0 && (loading || results.length > 0) && (
-        <ul className="absolute z-30 mt-1.5 max-h-72 w-full overflow-auto rounded-xl border border-zinc-200 bg-white p-1 shadow-xl ring-1 ring-black/5 dark:border-zinc-800 dark:bg-zinc-900 dark:ring-white/5">
+        <ul className="absolute z-50 mt-1.5 max-h-72 w-full overflow-auto rounded-xl border border-zinc-200 bg-white p-1 shadow-xl ring-1 ring-black/5 dark:border-zinc-800 dark:bg-zinc-900 dark:ring-white/5">
           {loading && results.length === 0 && (
             <li className="px-3 py-2 text-sm text-zinc-500">Searching…</li>
           )}

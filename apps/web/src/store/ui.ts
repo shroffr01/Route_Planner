@@ -18,6 +18,10 @@ type UiState = {
 
   activeOverlay: string | null;
   setActiveOverlay: (id: string | null) => void;
+
+  // Index of the waypoint whose info panel is shown in the left column.
+  selectedWaypoint: number | null;
+  setSelectedWaypoint: (i: number | null) => void;
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -35,4 +39,7 @@ export const useUiStore = create<UiState>((set) => ({
 
   activeOverlay: null,
   setActiveOverlay: (id) => set({ activeOverlay: id }),
+
+  selectedWaypoint: null,
+  setSelectedWaypoint: (i) => set({ selectedWaypoint: i }),
 }));

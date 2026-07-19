@@ -14,10 +14,10 @@ services:
     build: ./apps/api
     ports: ["8000:8000"]
     environment:
-      ROUTEPLANNER_REDIS_URL: "redis://redis:6379/0"
-      ROUTEPLANNER_MAPBOX_TOKEN: "${MAPBOX_TOKEN}"
-      ROUTEPLANNER_OPENWEATHER_API_KEY: "${OPENWEATHER_API_KEY}"
-      ROUTEPLANNER_CORS_ORIGINS: '["http://localhost:3000"]'
+      REDIS_URL: "redis://redis:6379/0"
+      MAPBOX_TOKEN: "${MAPBOX_TOKEN}"
+      OPENWEATHER_API_KEY: "${OPENWEATHER_API_KEY}"
+      CORS_ORIGINS: '["http://localhost:3000"]'
     depends_on:
       redis:
         condition: service_healthy

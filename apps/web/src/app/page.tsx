@@ -1,129 +1,231 @@
-import { CloudSun, MapPin, Sparkles, Zap } from "lucide-react";
-import Link from "next/link";
+"use client";
+import { AlertCircle } from "lucide-react";
+import dynamic from "next/dynamic";
+import { useCallback, useState } from "react";
 
-export default function Landing() {
-  return (
-    <div>
-      {/* Hero */}
-      <section className="relative overflow-hidden">
-        <div className="mx-auto max-w-screen-xl px-6 pb-20 pt-16 sm:pt-24 md:pb-28">
-          <div className="fade-up mx-auto max-w-3xl text-center">
-            <span className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-300">
-              <Sparkles size={12} /> Hourly forecasts along your full route
-            </span>
-            <h1 className="mt-6 text-5xl font-bold leading-[1.05] tracking-tightest sm:text-6xl md:text-7xl">
-              Drive into <span className="text-gradient">clear skies.</span>
-            </h1>
-            <p className="mx-auto mt-6 max-w-xl text-lg text-zinc-600 dark:text-zinc-400">
-              See the weather at every stop of your drive, graded A through F
-              so you can spot trouble before you leave the driveway.
-            </p>
-            <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <Link
-                href="/plan"
-                className="btn-primary inline-flex items-center gap-2 rounded-xl px-6 py-3 text-base font-semibold transition-all"
-              >
-                Plan a trip
-                <span aria-hidden>→</span>
-              </Link>
-              <a
-                href="#how-it-works"
-                className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 bg-white/70 px-6 py-3 text-sm font-medium text-zinc-700 backdrop-blur transition-colors hover:bg-white dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-200 dark:hover:bg-zinc-900"
-              >
-                How it works
-              </a>
-            </div>
-          </div>
+import { BottomSheet } from "@/components/BottomSheet";
+import { IntroAnimation } from "@/components/IntroAnimation";
+import { LoadingSteps } from "@/components/LoadingSteps";
+import { ShareModal } from "@/components/ShareModal";
+import { OverlayMenu } from "@/components/map/OverlayMenu";
+import { RadarScrubber } from "@/components/map/RadarScrubber";
+import { SelectedWaypointPanel } from "@/components/planner/SelectedWaypointPanel";
+import { TripForm, type TripFormValue } from "@/components/planner/TripForm";
+import { TripSummary } from "@/components/planner/TripSummary";
+import { useTripMutation } from "@/hooks/useTrip";
+import { gradeBgClass } from "@/lib/format";
+import type { TripResponse } from "@/lib/schemas";
+import { useUiStore } from "@/store/ui";
 
-          {/* Decorative preview */}
-          <div className="fade-up mx-auto mt-16 max-w-4xl" style={{ animationDelay: "120ms" }}>
-            <div className="card p-1.5">
-              <div className="relative aspect-[16/9] overflow-hidden rounded-xl bg-gradient-to-br from-sky-50 via-white to-indigo-50 dark:from-zinc-900 dark:via-zinc-950 dark:to-indigo-950/30">
-                <div className="absolute inset-0 grid place-items-center">
-                  <div className="flex flex-wrap items-center justify-center gap-3 px-6">
-                    {(["A", "A", "B", "C", "B", "A"] as const).map((g, i) => (
-                      <PreviewPill key={i} grade={g} />
-                    ))}
-                  </div>
-                </div>
-                <svg
-                  className="absolute inset-x-0 bottom-0 text-sky-400/30 dark:text-sky-500/20"
-                  viewBox="0 0 800 200"
-                  fill="none"
-                  preserveAspectRatio="none"
-                  style={{ width: "100%", height: "55%" }}
-                >
-                  <path
-                    d="M0,140 C120,100 200,160 320,120 C440,80 520,160 640,110 C720,80 770,90 800,80 L800,200 L0,200 Z"
-                    fill="currentColor"
-                  />
-                </svg>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Value props */}
-      <section id="how-it-works" className="mx-auto max-w-screen-xl px-6 pb-24">
-        <div className="grid gap-6 md:grid-cols-3">
-          <FeatureCard
-            icon={<MapPin size={20} />}
-            title="Every hour of your drive"
-            body="We sample your route by travel time and forecast the weather at each point — when you'll actually be there."
-          />
-          <FeatureCard
-            icon={<CloudSun size={20} />}
-            title="A–F favorability grade"
-            body="Wind, rain, ice, visibility, and active alerts roll up into one letter you can read in a glance."
-          />
-          <FeatureCard
-            icon={<Zap size={20} />}
-            title="Instant and shareable"
-            body="Cached forecasts return in milliseconds. Share a trip link with anyone — no account needed."
-          />
-        </div>
-      </section>
+const MapView = dynamic(() => import("@/components/map/Map").then((m) => m.Map), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full w-full items-center justify-center text-sm text-zinc-500">
+      Loading map…
     </div>
-  );
-}
+  ),
+});
 
-function FeatureCard({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div className="card p-6 transition-transform hover:-translate-y-0.5">
-      <div className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-400">
-        {icon}
+const Timeline = dynamic(
+  () => import("@/components/planner/Timeline").then((m) => m.Timeline),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="card fade-up flex h-[280px] items-center justify-center text-sm text-zinc-500">
+        Loading timeline…
       </div>
-      <h3 className="text-base font-semibold">{title}</h3>
-      <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">{body}</p>
-    </div>
+    ),
+  },
+);
+
+export default function HomePage() {
+  const [trip, setTrip] = useState<TripResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showIntro, setShowIntro] = useState(true);
+  const [showShare, setShowShare] = useState(false);
+  const mutation = useTripMutation();
+  const setSelectedWaypoint = useUiStore((s) => s.setSelectedWaypoint);
+
+  const handleIntroDone = useCallback(() => setShowIntro(false), []);
+  const loading = mutation.isPending;
+
+  async function onSubmit(v: TripFormValue) {
+    setError(null);
+    if (!v.origin || !v.destination) return;
+    try {
+      const waypoints = [v.origin, ...v.stops, v.destination].map((p) => ({
+        label: p.label,
+        lat: p.lat,
+        lon: p.lon,
+      }));
+      const res = await mutation.mutateAsync({
+        waypoints,
+        depart_at: v.departAt.toISOString(),
+        options: { avoid_tolls: v.avoidTolls, avoid_highways: v.avoidHighways },
+      });
+      setTrip(res);
+      setSelectedWaypoint(0);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Something went wrong";
+      setError(msg);
+      setTrip(null);
+    }
+  }
+
+  const sheetLabel = loading
+    ? "Planning your route…"
+    : trip
+    ? `${trip.trip_grade.letter}  ·  ${trip.origin.label.split(",")[0]} → ${trip.destination.label.split(",")[0]}`
+    : undefined;
+
+  const sidebarContent = loading ? (
+    <LoadingSteps loading={loading} />
+  ) : trip ? (
+    <>
+      <TripSummary trip={trip} onShare={() => setShowShare(true)} />
+      <SelectedWaypointPanel trip={trip} />
+    </>
+  ) : (
+    <EmptyHint />
+  );
+
+  return (
+    <>
+      {showIntro && <IntroAnimation onDone={handleIntroDone} />}
+      {showShare && trip && <ShareModal trip={trip} onClose={() => setShowShare(false)} />}
+
+      <div className="mx-auto flex max-w-screen-2xl flex-col gap-6 px-4 py-6 md:px-6 lg:py-8">
+        <TripForm onSubmit={onSubmit} loading={loading} />
+
+        {error && (
+          <div className="card fade-up flex gap-3 border border-rose-200 bg-rose-50/80 p-4 text-sm text-rose-700 dark:border-rose-950 dark:bg-rose-950/30 dark:text-rose-300">
+            <AlertCircle size={18} className="mt-0.5 shrink-0" />
+            <div>
+              <div className="font-medium">We couldn&apos;t plan that trip.</div>
+              <div className="mt-0.5 text-xs opacity-80">{error}</div>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
+          {/* Desktop sidebar — hidden on mobile (bottom sheet handles it) */}
+          <aside className="hidden space-y-5 lg:block">{sidebarContent}</aside>
+
+          {/* Map + controls */}
+          <div className="flex h-full flex-col gap-6">
+            <section className="card flex flex-col min-h-[560px] flex-1 overflow-hidden p-0">
+              <MapView trip={trip} />
+            </section>
+            {trip ? (
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <RadarScrubber trip={trip} />
+                <OverlayMenu />
+              </div>
+            ) : (
+              <OverlayMenu />
+            )}
+          </div>
+        </div>
+
+        {trip && <Timeline trip={trip} />}
+      </div>
+
+      {/* Mobile bottom sheet */}
+      <BottomSheet open={loading || !!trip} peekLabel={sheetLabel}>
+        {sidebarContent}
+      </BottomSheet>
+    </>
   );
 }
 
-function PreviewPill({ grade }: { grade: "A" | "B" | "C" | "D" | "F" }) {
-  const bg = {
-    A: "bg-grade-a",
-    B: "bg-grade-b text-zinc-900",
-    C: "bg-grade-c text-zinc-900",
-    D: "bg-grade-d",
-    F: "bg-grade-f",
-  }[grade];
+// ---------------------------------------------------------------------------
+// Ghost empty state — shows a preview of what the sidebar looks like
+// ---------------------------------------------------------------------------
+
+const GHOST_STOPS = [
+  { grade: "A" as const, width: "65%", subWidth: "45%" },
+  { grade: "B" as const, width: "72%", subWidth: "52%" },
+  { grade: "A" as const, width: "58%", subWidth: "38%" },
+  { grade: "C" as const, width: "70%", subWidth: "48%" },
+];
+
+function EmptyHint() {
   return (
-    <div className="flex items-center gap-2 rounded-full bg-white px-3 py-1.5 shadow-md dark:bg-zinc-900">
-      <span
-        className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-white ${bg}`}
-      >
-        {grade}
-      </span>
-      <span className="text-xs font-medium">72°F</span>
+    <div className="card flex flex-col overflow-hidden" style={{ minHeight: 580 }}>
+      {/* Ghost header */}
+      <div className="flex items-center justify-between border-b border-zinc-100 px-5 py-3 dark:border-zinc-800">
+        <div className="h-3 w-16 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
+        <div className="h-9 w-9 animate-pulse rounded-full bg-zinc-100 dark:bg-zinc-800" />
+      </div>
+
+      {/* Ghost route */}
+      <div className="flex gap-3 px-5 py-4">
+        <div className="flex flex-col items-center">
+          <div
+            className="h-2.5 w-2.5 animate-pulse rounded-full bg-zinc-200 dark:bg-zinc-700"
+            style={{ boxShadow: "0 0 0 4px rgb(var(--accent-from) / 0.15)" }}
+          />
+          <div className="my-1 w-px flex-none bg-zinc-100 dark:bg-zinc-800" style={{ height: 28 }} />
+          <div
+            className="h-2.5 w-2.5 animate-pulse rounded-full bg-zinc-200 dark:bg-zinc-700"
+            style={{ boxShadow: "0 0 0 4px rgb(var(--accent-from) / 0.1)" }}
+          />
+        </div>
+        <div className="flex flex-1 flex-col justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="h-4 w-36 animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800" />
+            <div className="h-3 w-24 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
+          </div>
+          <div className="space-y-1.5">
+            <div className="h-4 w-28 animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800" />
+            <div className="h-3 w-20 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
+          </div>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-zinc-100 dark:border-zinc-800" />
+
+      {/* Ghost waypoint list */}
+      <div className="flex-1 px-5 py-4">
+        <div className="mb-4 h-3 w-20 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
+        <div className="space-y-4">
+          {GHOST_STOPS.map((s, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-3"
+              style={{ animation: `fade-up 400ms ${80 + i * 70}ms cubic-bezier(0.16,1,0.3,1) both` }}
+            >
+              <span
+                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-extrabold opacity-50 ${gradeBgClass(s.grade)}`}
+              >
+                {s.grade}
+              </span>
+              <div className="flex-1 space-y-1.5">
+                <div
+                  className="h-3.5 animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800"
+                  style={{ width: s.width }}
+                />
+                <div
+                  className="h-2.5 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800"
+                  style={{ width: s.subWidth }}
+                />
+              </div>
+              <div className="h-3 w-10 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* CTA */}
+      <div className="border-t border-zinc-100 px-5 py-5 text-center dark:border-zinc-800">
+        <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          Plan a trip to see the forecast
+        </div>
+        <div className="mx-auto mt-1.5 max-w-[240px] text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+          Enter two cities above — we&apos;ll sample hourly weather along the whole route.
+        </div>
+      </div>
     </div>
   );
 }

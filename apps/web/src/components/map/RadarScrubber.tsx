@@ -2,6 +2,7 @@
 import { Pause, Play, Radio } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { HRRR_MAX_FORECAST_MIN } from "@/lib/hrrr";
 import { departTimeMs, positionAtTime, tripDurationMin } from "@/lib/route";
 import type { TripResponse } from "@/lib/schemas";
 import { useUiStore } from "@/store/ui";
@@ -19,6 +20,9 @@ export function RadarScrubber({ trip }: { trip: TripResponse }) {
 
   const totalMin = tripDurationMin(trip);
   const t0 = departTimeMs(trip);
+  // HRRR has no data past 48h from now, regardless of how far out the trip's
+  // depart time is — if the whole trip starts beyond that, there's nothing to show.
+  const unavailable = t0 - Date.now() > HRRR_MAX_FORECAST_MIN * 60_000;
   const targetMs = t0 + offset * 60_000;
   const [lon, lat] = positionAtTime(trip, targetMs);
 
@@ -53,6 +57,15 @@ export function RadarScrubber({ trip }: { trip: TripResponse }) {
     setPlaying(false);
   }, [tripKey, setOffset]);
 
+  // No HRRR data exists this far out — force the toggle off rather than
+  // leaving it "on" with nothing to render.
+  useEffect(() => {
+    if (unavailable && enabled) {
+      setEnabled(false);
+      setPlaying(false);
+    }
+  }, [unavailable, enabled, setEnabled]);
+
   return (
     <div className="card fade-up p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -77,18 +90,22 @@ export function RadarScrubber({ trip }: { trip: TripResponse }) {
           <button
             type="button"
             onClick={() => setPlaying((p) => !p)}
-            disabled={!enabled}
+            disabled={!enabled || unavailable}
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
             title={playing ? "Pause" : "Play"}
           >
             {playing ? <Pause size={14} /> : <Play size={14} />}
           </button>
-          <label className="inline-flex cursor-pointer items-center gap-2 text-xs">
+          <label
+            className={`inline-flex items-center gap-2 text-xs ${unavailable ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`}
+            title={unavailable ? "HRRR radar only forecasts 48 h ahead" : undefined}
+          >
             <span className="text-zinc-500 dark:text-zinc-400">Radar</span>
             <span className="relative inline-block h-5 w-9">
               <input
                 type="checkbox"
                 checked={enabled}
+                disabled={unavailable}
                 onChange={(e) => setEnabled(e.target.checked)}
                 className="peer h-0 w-0 opacity-0"
               />
@@ -107,12 +124,14 @@ export function RadarScrubber({ trip }: { trip: TripResponse }) {
         value={Math.min(offset, totalMin)}
         onChange={(e) => setOffset(Number(e.target.value))}
         className="w-full accent-sky-500 disabled:opacity-50"
-        disabled={!enabled}
+        disabled={!enabled || unavailable}
       />
       <div className="mt-1 flex items-center justify-between text-[11px] text-zinc-500 dark:text-zinc-400">
         <span>Departure</span>
         <span className="font-medium text-zinc-700 dark:text-zinc-200">
-          {enabled ? (
+          {unavailable ? (
+            <span className="text-zinc-400">Radar unavailable — departs more than 48h from now</span>
+          ) : enabled ? (
             <>
               +{formatOffset(offset)} → {targetLabel}
               <span className="ml-2 text-zinc-400">
