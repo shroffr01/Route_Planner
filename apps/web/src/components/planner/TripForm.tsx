@@ -1,6 +1,6 @@
 "use client";
 import { ArrowRight, GripVertical, Loader2, Plus, Settings, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { cn } from "@/lib/cn";
 import type { Place } from "@/lib/schemas";
@@ -19,6 +19,13 @@ export type TripFormValue = {
 
 const MAX_STOPS = 4;
 
+// `new Date()` returns a different value on the server (SSR render time)
+// than on the client (hydration time), which would make the departure
+// input's rendered value mismatch between the two and trigger a hydration
+// error. Start from a fixed, deterministic placeholder instead and swap in
+// the real "now" once mounted on the client.
+const UNSET_DEPART_AT = new Date(0);
+
 export function TripForm({
   initial,
   onSubmit,
@@ -31,13 +38,20 @@ export function TripForm({
   const [origin, setOrigin] = useState<Place | null>(initial?.origin ?? null);
   const [stops, setStops] = useState<(Place | null)[]>(initial?.stops ?? []);
   const [destination, setDestination] = useState<Place | null>(initial?.destination ?? null);
-  const [departAt, setDepartAt] = useState<Date>(initial?.departAt ?? new Date());
+  const [departAt, setDepartAt] = useState<Date>(initial?.departAt ?? UNSET_DEPART_AT);
   const [avoidTolls, setAvoidTolls] = useState(initial?.avoidTolls ?? false);
   const [avoidHighways, setAvoidHighways] = useState(initial?.avoidHighways ?? false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (departAt === UNSET_DEPART_AT) setDepartAt(new Date());
+    // Only run once on mount to resolve the placeholder — intentionally
+    // excludes `departAt` so later user edits aren't overwritten.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const canSubmit = origin && destination && !loading;
 

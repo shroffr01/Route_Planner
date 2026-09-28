@@ -3,8 +3,12 @@ from pathlib import Path
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo root is two levels up from this file: apps/api/app/config.py -> apps/api -> repo root.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+# Repo root is 3 parents up from this file: apps/api/app/config.py -> apps/api -> apps -> repo root.
+# In the Docker image only `app/` is copied in (see apps/api/Dockerfile), so that directory
+# doesn't exist there — fall back to the app dir itself; the .env lookup below just misses,
+# which is fine since production config comes from real env vars (Fly secrets), not a file.
+_FILE_PARENTS = Path(__file__).resolve().parents
+_REPO_ROOT = _FILE_PARENTS[3] if len(_FILE_PARENTS) > 3 else _FILE_PARENTS[-1]
 
 
 class Settings(BaseSettings):

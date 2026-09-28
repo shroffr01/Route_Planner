@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useState } from "react";
 import { Clock } from "lucide-react";
 
 const MAX_ADVANCE_DAYS = 7;
@@ -15,15 +16,24 @@ export function DepartureTimePicker({
   value: Date;
   onChange: (d: Date) => void;
 }) {
-  const minDate = new Date();
-  const maxDate = new Date(Date.now() + MAX_ADVANCE_DAYS * 24 * 60 * 60 * 1000);
+  // `min`/`max` depend on "now", which differs between the server render and
+  // the client render at hydration time. Don't compute them during render —
+  // start with no bounds (identical on server and client) and fill them in
+  // after mount, so the server- and client-rendered HTML always match.
+  const [bounds, setBounds] = useState<{ min: Date; max: Date } | null>(null);
+
+  useEffect(() => {
+    const min = new Date();
+    const max = new Date(min.getTime() + MAX_ADVANCE_DAYS * 24 * 60 * 60 * 1000);
+    setBounds({ min, max });
+  }, []);
 
   function handleChange(next: Date) {
     if (Number.isNaN(next.getTime())) return;
-    if (next < minDate) {
-      onChange(minDate);
-    } else if (next > maxDate) {
-      onChange(maxDate);
+    if (bounds && next < bounds.min) {
+      onChange(bounds.min);
+    } else if (bounds && next > bounds.max) {
+      onChange(bounds.max);
     } else {
       onChange(next);
     }
@@ -43,8 +53,8 @@ export function DepartureTimePicker({
           <input
             type="datetime-local"
             value={toLocalInputValue(value)}
-            min={toLocalInputValue(minDate)}
-            max={toLocalInputValue(maxDate)}
+            min={bounds ? toLocalInputValue(bounds.min) : undefined}
+            max={bounds ? toLocalInputValue(bounds.max) : undefined}
             onChange={(e) => handleChange(new Date(e.target.value))}
             className="w-full rounded-xl border border-zinc-200 bg-white py-3 pl-9 pr-3 text-sm shadow-sm outline-none transition-all hover:border-zinc-300 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700 dark:focus:border-sky-500 dark:focus:ring-sky-950"
           />
