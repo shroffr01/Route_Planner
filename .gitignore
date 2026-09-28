@@ -13,6 +13,7 @@ __pycache__/
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # env / secrets
 .env
@@ -22,6 +23,10 @@ out/
 # editor
 .vscode/
 .idea/
+.claude/settings.local.json
+
+# crash dumps
+*.stackdump
 
 # build artifacts
 dist/
